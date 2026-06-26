@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -44,6 +45,7 @@ from version import __version__
 _FETCH_TIMEOUT = 12
 _DOWNLOAD_TIMEOUT = 300
 _USER_AGENT = f"HanToPdf/{__version__}"
+_URL_RETRIES = 3
 
 # 전체 진행률 구간
 _PCT_START = 3
@@ -109,6 +111,86 @@ def _install_dir() -> Path:
     return Path(sys.executable).resolve().parent
 
 
+def _ssl_context() -> ssl.SSLContext:
+    ctx = ssl.create_default_context()
+    try:
+        ctx.set_ciphers("DEFAULT:@SECLEVEL=1")
+    except ssl.SSLError:
+        pass
+    return ctx
+
+
+_SSL_CTX = _ssl_context()
+
+
+def _is_retriable_url_error(exc: BaseException) -> bool:
+    reason = getattr(exc, "reason", exc)
+    msg = str(reason).lower()
+    return any(
+        token in msg
+        for token in (
+            "unexpected_eof",
+            "eof occurred",
+            "timed out",
+            "10054",
+            "connection reset",
+            "connection aborted",
+            "certificate verify failed",
+        )
+    )
+
+
+def _urlopen(req: urllib.request.Request, timeout: float, *, retries: int = _URL_RETRIES):
+    last_exc: BaseException | None = None
+    for attempt in range(retries):
+        try:
+            return urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX)
+        except urllib.error.URLError as exc:
+            last_exc = exc
+            if attempt + 1 < retries and _is_retriable_url_error(exc):
+                time.sleep(0.6 * (attempt + 1))
+                continue
+            raise
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("urlopen failed")
+
+
+def _release_tag(version: str) -> str:
+    version = version.strip()
+    return version if version.startswith(("v", "V")) else f"v{version}"
+
+
+def _release_zip_url(repo: str, version: str, filename: str) -> str:
+    name = Path(filename).name
+    return f"https://github.com/{repo}/releases/download/{_release_tag(version)}/{name}"
+
+
+def _prefer_release_zip_url(repo: str, version: str, download_url: str) -> str:
+    """대용량 ZIP은 raw.githubusercontent.com 대신 GitHub Releases CDN 사용."""
+    if not version or not download_url.lower().endswith(".zip"):
+        return download_url
+    filename = download_url.rsplit("/", 1)[-1]
+    if "raw.githubusercontent.com" in download_url and f"/{RELEASES_DIR}/" in download_url:
+        return _release_zip_url(repo, version, filename)
+    if download_url.startswith(f"https://github.com/{repo}/releases/download/"):
+        return download_url
+    return download_url
+
+
+def _download_url_candidates(repo: str, version: str, download_url: str) -> list[str]:
+    primary = _prefer_release_zip_url(repo, version, download_url)
+    candidates = [primary]
+    if primary != download_url:
+        candidates.append(download_url)
+    if primary.startswith(f"https://github.com/{repo}/releases/download/"):
+        raw_name = primary.rsplit("/", 1)[-1]
+        raw = _raw_github_url(repo, GITHUB_BRANCH.strip(), f"{RELEASES_DIR}/{raw_name}")
+        if raw not in candidates:
+            candidates.append(raw)
+    return candidates
+
+
 def _map_download_pct(download_pct: int) -> int:
     span = _PCT_DOWNLOAD_END - _PCT_START
     return _PCT_START + int(download_pct * span / 100)
@@ -135,7 +217,7 @@ def _fetch_github_contents_json(repo: str, path: str, branch: str) -> dict | Non
     url = f"https://api.github.com/repos/{repo}/contents/{encoded}?ref={urllib.parse.quote(branch)}"
     try:
         req = urllib.request.Request(url, headers=_github_api_headers())
-        with urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT) as resp:
+        with _urlopen(req, _FETCH_TIMEOUT) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         if not isinstance(data, dict) or data.get("encoding") != "base64":
             return None
@@ -153,7 +235,7 @@ def _fetch_github_latest_release(repo: str) -> dict | None:
     url = f"https://api.github.com/repos/{repo}/releases/latest"
     try:
         req = urllib.request.Request(url, headers=_github_api_headers())
-        with urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT) as resp:
+        with _urlopen(req, _FETCH_TIMEOUT) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         if not isinstance(data, dict) or data.get("draft"):
             return None
@@ -187,9 +269,16 @@ def _normalize_manifest(manifest: dict, repo: str, branch: str) -> dict:
     if not download_url and version:
         download_url = f"HanToPdf-{version}.zip"
     if download_url and not download_url.startswith(("http://", "https://")):
+        zip_name = download_url.rsplit("/", 1)[-1]
         if "/" not in download_url:
             download_url = f"{RELEASES_DIR}/{download_url}"
-        download_url = _raw_github_url(repo, branch, download_url)
+            zip_name = download_url.rsplit("/", 1)[-1]
+        if zip_name.lower().endswith(".zip") and version:
+            download_url = _release_zip_url(repo, version, zip_name)
+        else:
+            download_url = _raw_github_url(repo, branch, download_url)
+    elif version:
+        download_url = _prefer_release_zip_url(repo, version, download_url)
     result["download_url"] = download_url
     return result
 
@@ -224,7 +313,7 @@ def _fetch_update_manifest() -> dict | None:
 
 def _fetch_json(url: str) -> dict:
     req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-    with urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT) as resp:
+    with _urlopen(req, _FETCH_TIMEOUT) as resp:
         data = resp.read()
     payload = json.loads(data.decode("utf-8"))
     if not isinstance(payload, dict):
@@ -236,9 +325,42 @@ def _download_file(
     url: str,
     dest: Path,
     progress_cb: Callable[[int], None] | None = None,
+    *,
+    version: str = "",
 ) -> None:
-    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-    with urllib.request.urlopen(req, timeout=_DOWNLOAD_TIMEOUT) as resp:
+    repo = GITHUB_REPO.strip()
+    urls = _download_url_candidates(repo, version, url) if repo and version else [url]
+    last_exc: BaseException | None = None
+    for candidate in urls:
+        try:
+            _download_file_once(candidate, dest, progress_cb)
+            return
+        except urllib.error.URLError as exc:
+            last_exc = exc
+            if dest.exists():
+                try:
+                    dest.unlink()
+                except OSError:
+                    pass
+            continue
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("download failed")
+
+
+def _download_file_once(
+    url: str,
+    dest: Path,
+    progress_cb: Callable[[int], None] | None = None,
+) -> None:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": _USER_AGENT,
+            "Accept": "*/*",
+        },
+    )
+    with _urlopen(req, _DOWNLOAD_TIMEOUT, retries=_URL_RETRIES) as resp:
         total = int(resp.headers.get("Content-Length") or 0)
         read = 0
         chunk_size = 256 * 1024
@@ -430,7 +552,7 @@ def _run_update_flow(
                 root.after(0, lambda p=pct: overlay.set_progress(p))
 
             root.after(0, lambda: overlay.set_detail("업데이트 파일 다운로드 중…"))
-            _download_file(download_url, zip_path, on_progress)
+            _download_file(download_url, zip_path, on_progress, version=remote_ver)
             root.after(0, lambda: overlay.set_progress(_PCT_DOWNLOAD_END))
 
             root.after(0, lambda: overlay.set_detail("다운로드 파일 검증 중…"))
