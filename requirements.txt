@@ -1,0 +1,4 @@
+pywin32
+pypdf
+tkinterdnd2
+pyinstaller
