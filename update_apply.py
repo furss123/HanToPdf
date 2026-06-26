@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import shutil
 import sys
+import tempfile
 import time
+import traceback
 import zipfile
 from pathlib import Path
 
-_LOG_PATH = Path(__import__("os").environ.get("APPDATA", "")) / "HanToPdf" / "update.log"
+_LOG_PATH = Path(os.environ.get("APPDATA", str(Path.home()))) / "HanToPdf" / "update.log"
+_LOCAL_BASE = Path(os.environ.get("LOCALAPPDATA", tempfile.gettempdir())) / "HanToPdf"
 
 _SYNCHRONIZE = 0x00100000
 _WAIT_TIMEOUT_MS = 120_000
 _COPY_RETRIES = 8
 _COPY_RETRY_DELAY = 0.75
+_CREATE_NO_WINDOW = 0x08000000
+_DETACHED_PROCESS = 0x00000008
 
 
 def _log(message: str) -> None:
@@ -25,6 +31,81 @@ def _log(message: str) -> None:
             fh.write(line + "\n")
     except OSError:
         pass
+
+
+def _log_exception(context: str) -> None:
+    _log(f"{context}\n{traceback.format_exc()}")
+
+
+def _desktop_dir() -> Path | None:
+    try:
+        import win32com.client
+
+        shell = win32com.client.Dispatch("WScript.Shell")
+        return Path(shell.SpecialFolders("Desktop"))
+    except Exception:
+        profile = os.environ.get("USERPROFILE", "")
+        if profile:
+            return Path(profile) / "Desktop"
+        return None
+
+
+def cleanup_legacy_update_artifacts() -> None:
+    """예전 버전이 바탕화면·TEMP에 남긴 스테이징 폴더 정리."""
+    desktop = _desktop_dir()
+    if desktop and desktop.is_dir():
+        for item in desktop.glob("_HanToPdf_update_*"):
+            shutil.rmtree(item, ignore_errors=True)
+
+    staging_root = _LOCAL_BASE / "staging"
+    if staging_root.is_dir():
+        for item in staging_root.glob("extract_*"):
+            shutil.rmtree(item, ignore_errors=True)
+
+
+def _make_extract_dir() -> Path:
+    root = _LOCAL_BASE / "staging"
+    root.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix="extract_", dir=root))
+
+
+def _prepare_detached_updater(install_dir: Path) -> Path:
+    """설치 폴더 DLL 잠금을 피하려고 LOCALAPPDATA에 실행 복사본 생성."""
+    install_dir = install_dir.resolve()
+    runtime_root = _LOCAL_BASE / "updater-runtime"
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    runtime = Path(tempfile.mkdtemp(prefix="run_", dir=runtime_root))
+
+    src_exe = install_dir / "HanToPdf.exe"
+    src_internal = install_dir / "_internal"
+    if not src_exe.is_file():
+        raise FileNotFoundError(f"실행 파일 없음: {src_exe}")
+    if not src_internal.is_dir():
+        raise FileNotFoundError(f"_internal 폴더 없음: {src_internal}")
+
+    shutil.copy2(src_exe, runtime / "HanToPdf.exe")
+    shutil.copytree(src_internal, runtime / "_internal")
+    _log(f"분리 업데이터 준비: {runtime}")
+    return runtime / "HanToPdf.exe"
+
+
+def _schedule_dir_cleanup(path: Path) -> None:
+    import subprocess
+
+    if not path.exists():
+        return
+    cmd = f'ping 127.0.0.1 -n 3 >nul & rmdir /s /q "{path}"'
+    subprocess.Popen(
+        ["cmd.exe", "/c", cmd],
+        close_fds=True,
+        creationflags=_CREATE_NO_WINDOW,
+    )
+
+
+def _is_detached_runtime() -> bool:
+    if not getattr(sys, "frozen", False):
+        return False
+    return "updater-runtime" in Path(sys.executable).resolve().as_posix()
 
 
 def _wait_for_process(pid: int) -> None:
@@ -40,7 +121,7 @@ def _wait_for_process(pid: int) -> None:
             _log(f"WaitForSingleObject 타임아웃(pid={pid}, code={result})")
     finally:
         kernel32.CloseHandle(handle)
-    time.sleep(1.5)
+    time.sleep(2)
 
 
 def _resolve_zip_root(staging: Path) -> Path:
@@ -85,6 +166,34 @@ def _copy_tree(src: Path, dst: Path) -> int:
     return copied
 
 
+def launch_apply_update(
+    *,
+    parent_pid: int,
+    install_dir: Path,
+    zip_path: Path,
+    exe_path: Path,
+) -> None:
+    """설치 폴더와 분리된 exe 복사본으로 업데이트 적용 프로세스 시작."""
+    import subprocess
+
+    cleanup_legacy_update_artifacts()
+    updater_exe = _prepare_detached_updater(install_dir)
+    subprocess.Popen(
+        [
+            str(updater_exe),
+            "--hantopdf-apply-update",
+            str(parent_pid),
+            str(install_dir),
+            str(zip_path),
+            str(exe_path),
+        ],
+        cwd=str(updater_exe.parent),
+        close_fds=True,
+        creationflags=_DETACHED_PROCESS | _CREATE_NO_WINDOW,
+    )
+    _log(f"업데이트 프로세스 시작: {updater_exe}")
+
+
 def apply_update(
     *,
     parent_pid: int,
@@ -97,16 +206,13 @@ def apply_update(
     exe_path = exe_path.resolve()
     _log(f"업데이트 시작 pid={parent_pid} install={install_dir} zip={zip_path}")
 
+    cleanup_legacy_update_artifacts()
     _wait_for_process(parent_pid)
 
     if not zip_path.is_file():
         raise FileNotFoundError(f"ZIP 없음: {zip_path}")
 
-    staging = install_dir.parent / f"_HanToPdf_update_{int(time.time())}"
-    if staging.exists():
-        shutil.rmtree(staging, ignore_errors=True)
-    staging.mkdir(parents=True, exist_ok=True)
-
+    staging = _make_extract_dir()
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(staging)
@@ -131,8 +237,8 @@ def apply_update(
     try:
         shortcut_path = refresh_desktop_shortcut(install_dir, exe_path)
         _log(f"바탕화면 바로가기 갱신: {shortcut_path}")
-    except Exception as exc:
-        _log(f"바로가기 갱신 실패(계속 재시작): {exc}")
+    except Exception:
+        _log_exception("바로가기 갱신 실패(계속 재시작)")
 
     import subprocess
 
@@ -142,6 +248,9 @@ def apply_update(
         close_fds=True,
     )
     _log(f"재시작: {exe_path}")
+
+    if _is_detached_runtime():
+        _schedule_dir_cleanup(Path(sys.executable).resolve().parent)
 
 
 def run_apply_update_cli(argv: list[str] | None = None) -> int:
@@ -161,8 +270,8 @@ def run_apply_update_cli(argv: list[str] | None = None) -> int:
             exe_path=exe_path,
         )
         return 0
-    except Exception as exc:
-        _log(f"업데이트 실패: {exc}")
+    except Exception:
+        _log_exception("업데이트 실패")
         return 1
 
 

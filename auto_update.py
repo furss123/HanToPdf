@@ -85,6 +85,12 @@ def schedule_update_check(root: tk.Misc) -> None:
         return
     if os.environ.get("HANTOPDF_SKIP_UPDATE") == "1":
         return
+    try:
+        from update_apply import cleanup_legacy_update_artifacts
+
+        cleanup_legacy_update_artifacts()
+    except Exception:
+        pass
     threading.Thread(target=_check_worker, args=(root,), name="UpdateCheck", daemon=True).start()
 
 
@@ -564,18 +570,13 @@ def _run_update_flow(
             pid = os.getpid()
             install = _install_dir()
             exe_path = install / "HanToPdf.exe"
-            subprocess.Popen(
-                [
-                    sys.executable,
-                    "--hantopdf-apply-update",
-                    str(pid),
-                    str(install),
-                    str(zip_path),
-                    str(exe_path),
-                ],
-                cwd=str(install),
-                close_fds=True,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            from update_apply import launch_apply_update
+
+            launch_apply_update(
+                parent_pid=pid,
+                install_dir=install,
+                zip_path=zip_path,
+                exe_path=exe_path,
             )
             root.after(0, lambda: overlay.set_progress(_PCT_APPLY))
 

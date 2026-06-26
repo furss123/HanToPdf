@@ -1,6 +1,6 @@
 {
-    "download_url":  "HanToPdf-1.0.4.zip",
-    "sha256":  "3d3a9f8f29d8c6a4d804fdcabfcff05f0b81452256fac88e8ec873698c4c7234",
-    "version":  "1.0.4",
-    "release_notes":  "업데이트 후 바탕화면 바로가기 자동 갱신 및 재실행"
+    "download_url":  "HanToPdf-1.0.5.zip",
+    "sha256":  "4023f8e6a6995fe9e90ed0c9e04651262518b0cba9e101d6a99e195f248c1547",
+    "version":  "1.0.5",
+    "release_notes":  "업데이트 스테이징 경로 수정, 분리 업데이터로 파일 잠금·재시작 실패 해결"
 }
