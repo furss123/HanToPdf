@@ -1,6 +1,6 @@
-﻿{
-  "version": "1.0.1",
-  "download_url": "HanToPdf-1.0.1.zip",
-  "sha256": "1beae94209d027a3b301a415b4f38ba52a99b35c7656457d67bc6a1c4068cf54",
-  "release_notes": "UI 개선, 자동 업데이트, GitHub 연동, 설정 창 레이아웃 수정"
+{
+    "download_url":  "HanToPdf-1.0.2.zip",
+    "sha256":  "58c04c3df0d7700f2a5fcac179edecc32dc487eb4951c2b04d001c8491d9e364",
+    "version":  "1.0.2",
+    "release_notes":  "UI 개선, 자동 업데이트, GitHub 연동, 설정 창 레이아웃 수정, version.json BOM 수정"
 }

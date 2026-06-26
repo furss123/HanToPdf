@@ -141,7 +141,7 @@ def _fetch_github_contents_json(repo: str, path: str, branch: str) -> dict | Non
             return None
         import base64
 
-        raw = base64.b64decode(data["content"]).decode("utf-8")
+        raw = base64.b64decode(data["content"]).decode("utf-8-sig")
         payload = json.loads(raw)
         return payload if isinstance(payload, dict) else None
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, json.JSONDecodeError):

@@ -49,7 +49,8 @@ $manifest = @{
     sha256        = $hash
     release_notes = $ReleaseNotes
 } | ConvertTo-Json -Depth 3
-Set-Content -Path $ManifestPath -Value $manifest -Encoding UTF8
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($ManifestPath, $manifest, $utf8NoBom)
 
 if (Test-Path $VersionPy) {
     $content = Get-Content $VersionPy -Raw -Encoding UTF8
