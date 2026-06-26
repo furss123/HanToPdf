@@ -1,6 +1,6 @@
 {
-    "download_url":  "HanToPdf-1.0.3.zip",
-    "sha256":  "5f75f1783dd0b55e8c02e52a563f77d4663e32d5c6aa9b69b3ee5171457342f5",
-    "version":  "1.0.3",
-    "release_notes":  "업데이트 시 백신 오탐 수정(PowerShell 제거), 레지스트리 직접 쓰기 제거, 업데이트 적용 안정화"
+    "download_url":  "HanToPdf-1.0.4.zip",
+    "sha256":  "3d3a9f8f29d8c6a4d804fdcabfcff05f0b81452256fac88e8ec873698c4c7234",
+    "version":  "1.0.4",
+    "release_notes":  "업데이트 후 바탕화면 바로가기 자동 갱신 및 재실행"
 }

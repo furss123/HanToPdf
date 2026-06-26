@@ -126,6 +126,14 @@ def apply_update(
         except OSError:
             _log(f"ZIP 삭제 실패: {zip_path}")
 
+    from desktop_shortcut import refresh_desktop_shortcut
+
+    try:
+        shortcut_path = refresh_desktop_shortcut(install_dir, exe_path)
+        _log(f"바탕화면 바로가기 갱신: {shortcut_path}")
+    except Exception as exc:
+        _log(f"바로가기 갱신 실패(계속 재시작): {exc}")
+
     import subprocess
 
     subprocess.Popen(
