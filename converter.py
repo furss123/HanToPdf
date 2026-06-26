@@ -4,14 +4,24 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from typing import Callable
 
 import pythoncom
 import win32com.client
 from pypdf import PdfWriter
 
-from winutil import hide_console_window
+from hwp_automation import (
+    HwpSecurityDialogWatcher,
+    dismiss_hwp_security_dialog,
+    ensure_hwp_security_module_registered,
+    register_hwp_security_modules,
+    wait_for_security_dialogs,
+)
+from winutil import hide_console_window, hide_hwp_windows_com, suppress_background_windows
 
 HWP_EXTENSIONS = {".hwp", ".hwpx"}
+
+_hwp_installed_cache: bool | None = None
 
 PDF_SAVE_ATTRIBUTES = 16384
 
@@ -43,6 +53,15 @@ PDF_QUALITY_PRESETS = {
 PDF_QUALITY_ORDER = ("original", "high", "medium", "low")
 
 
+class ConversionCancelled(Exception):
+    """사용자가 변환을 중단함."""
+
+
+def _check_cancelled(should_cancel: Callable[[], bool] | None) -> None:
+    if should_cancel and should_cancel():
+        raise ConversionCancelled()
+
+
 def get_picture_quality(quality_key: str) -> int:
     preset = PDF_QUALITY_PRESETS.get(quality_key, PDF_QUALITY_PRESETS["high"])
     return preset["picture_quality"]
@@ -55,21 +74,33 @@ def build_pdf_save_argument(picture_quality: int) -> str:
     )
 
 
+def is_hwp_available_fast() -> bool:
+    """레지스트리 ProgID 확인 — 한글을 실행하지 않고 즉시 판별."""
+    import winreg
+
+    try:
+        winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, r"HWPFrame.HwpObject")
+        return True
+    except OSError:
+        return False
+
+
+def _register_hwp_security_bypass(hwp) -> None:
+    """보안 모듈 등록으로 접근 허용 창 자체가 뜨지 않도록 시도."""
+    register_hwp_security_modules(hwp)
+
+
 def _create_hwp():
-    hide_console_window()
-    hwp = win32com.client.Dispatch("HWPFrame.HwpObject")
+    suppress_background_windows()
     try:
-        hwp.RegisterModule("FilePathCheckDLL", "SecurityModule")
-    except Exception:
-        pass
-    try:
-        hwp.SetMessageBoxMode(0x00214411)
-    except Exception:
-        pass
-    try:
-        hwp.XHwpWindows.Item(0).Visible = False
-    except Exception:
-        pass
+        hwp = win32com.client.Dispatch("HWPFrame.HwpObject")
+    except Exception as exc:
+        raise RuntimeError(
+            "한컴오피스(한글)가 설치되어 있지 않거나 실행할 수 없습니다."
+        ) from exc
+    _register_hwp_security_bypass(hwp)
+    _reset_print_method(hwp)
+    hide_hwp_windows_com(hwp)
     return hwp
 
 
@@ -133,6 +164,10 @@ def _open_document(hwp, src: Path) -> None:
     except Exception as exc:
         raise RuntimeError(f"파일을 열 수 없습니다: {src.name}") from exc
 
+    wait_for_security_dialogs(timeout=3.0)
+    dismiss_hwp_security_dialog()
+    hide_hwp_windows_com(hwp)
+
     if ok is False:
         raise RuntimeError(f"파일을 열 수 없습니다: {src.name}")
 
@@ -142,6 +177,7 @@ def convert_hwp_to_pdf(
     hwp_path: str | Path,
     pdf_path: str | Path,
     picture_quality: int | None = None,
+    step_cb=None,
 ) -> Path:
     """이미 열린 HWP 세션으로 단일 파일 변환."""
     if picture_quality is None:
@@ -154,10 +190,33 @@ def convert_hwp_to_pdf(
     if src.suffix.lower() not in HWP_EXTENSIONS:
         raise ValueError(f"지원하지 않는 형식입니다: {src.suffix}")
 
+    if step_cb:
+        step_cb(0.08, "문서 열기")
     _open_document(hwp, src)
-    _reset_print_method(hwp)
+    if step_cb:
+        step_cb(0.45, "PDF 저장 중")
     _save_pdf(hwp, dst, picture_quality)
+    hide_hwp_windows_com(hwp)
+    if step_cb:
+        step_cb(1.0, "완료")
     return dst
+
+
+def _normalize_pdf_filename(name: str) -> str:
+    name = name.strip()
+    if not name.lower().endswith(".pdf"):
+        name += ".pdf"
+    return name
+
+
+def _separate_output_name(src: Path, output_filename: str | None, total: int) -> str:
+    custom = (output_filename or "").strip()
+    if not custom:
+        return f"{src.stem}.pdf"
+    if total == 1:
+        return _normalize_pdf_filename(custom)
+    base = Path(custom).stem
+    return f"{base}_{src.stem}.pdf"
 
 
 def merge_pdfs(pdf_paths: list[Path], output_path: Path) -> Path:
@@ -176,8 +235,10 @@ def convert_files(
     output_dir: str | Path,
     mode: str = "separate",
     merged_name: str = "merged.pdf",
+    output_filename: str | None = None,
     picture_quality: int | None = None,
     progress_cb=None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> list[Path]:
     if picture_quality is None:
         picture_quality = get_picture_quality("high")
@@ -188,37 +249,60 @@ def convert_files(
     total = len(files)
     results: list[Path] = []
 
+    def report(percent: float, filename: str, action: str) -> None:
+        if progress_cb:
+            progress_cb(min(100.0, max(0.0, percent)), filename, action)
+
     pythoncom.CoInitialize()
-    hide_console_window()
+    suppress_background_windows()
+    ensure_hwp_security_module_registered()
+    watcher = HwpSecurityDialogWatcher()
+    watcher.start()
     hwp = None
     try:
+        report(0, "", "한글 프로그램 준비 중")
         hwp = _create_hwp()
+        report(3, "", "한글 준비 완료")
 
         if mode == "separate":
-            for i, src in enumerate(files, 1):
-                if progress_cb:
-                    progress_cb(i - 1, total, f"변환 중 ({i}/{total}): {src.name}")
-                dst = output_dir / f"{src.stem}.pdf"
-                results.append(convert_hwp_to_pdf(hwp, src, dst, picture_quality))
-                if progress_cb:
-                    progress_cb(i, total, f"완료 ({i}/{total}): {src.name}")
+            for i, src in enumerate(files):
+                _check_cancelled(should_cancel)
+                chunk = 97.0 / total
+                base = 3.0 + i * chunk
+
+                def step_cb(step: float, action: str, _base=base, _chunk=chunk, _name=src.name):
+                    report(_base + _chunk * step, _name, action)
+
+                dst = output_dir / _separate_output_name(src, output_filename, total)
+                results.append(convert_hwp_to_pdf(
+                    hwp, src, dst, picture_quality, step_cb=step_cb,
+                ))
+            report(100, "", "변환 완료")
             return results
 
         temp_dir = Path(tempfile.mkdtemp(prefix="hantopdf_"))
         temp_pdfs: list[Path] = []
         try:
-            for i, src in enumerate(files, 1):
-                if progress_cb:
-                    progress_cb(i - 1, total, f"변환 중 ({i}/{total}): {src.name}")
-                tmp = temp_dir / f"{i:03d}.pdf"
-                temp_pdfs.append(convert_hwp_to_pdf(hwp, src, tmp, picture_quality))
-                if progress_cb:
-                    progress_cb(i, total, f"완료 ({i}/{total}): {src.name}")
+            for i, src in enumerate(files):
+                _check_cancelled(should_cancel)
+                chunk = 90.0 / total
+                base = 3.0 + i * chunk
 
-            if progress_cb:
-                progress_cb(total, total, "PDF 병합 중...")
-            merged = output_dir / merged_name
+                def step_cb(step: float, action: str, _base=base, _chunk=chunk, _name=src.name):
+                    report(_base + _chunk * step, _name, action)
+
+                tmp = temp_dir / f"{i + 1:03d}.pdf"
+                temp_pdfs.append(convert_hwp_to_pdf(
+                    hwp, src, tmp, picture_quality, step_cb=step_cb,
+                ))
+
+            _check_cancelled(should_cancel)
+            report(95, "", "PDF 병합 중")
+            custom = (output_filename or "").strip()
+            merged = _normalize_pdf_filename(custom) if custom else merged_name
+            merged = output_dir / merged
             results.append(merge_pdfs(temp_pdfs, merged))
+            report(100, "", "변환 완료")
             return results
         finally:
             for p in temp_pdfs:
@@ -231,6 +315,7 @@ def convert_files(
             except OSError:
                 pass
     finally:
+        watcher.stop()
         if hwp is not None:
             try:
                 hwp.Quit()
@@ -239,17 +324,27 @@ def convert_files(
         pythoncom.CoUninitialize()
 
 
-def check_hwp_installed() -> bool:
+def check_hwp_installed(*, force: bool = False) -> bool:
+    """한글 COM 연결 가능 여부 (결과 캐시)."""
+    global _hwp_installed_cache
+    if not force and _hwp_installed_cache is not None:
+        return _hwp_installed_cache
+    if not is_hwp_available_fast():
+        _hwp_installed_cache = False
+        return False
+
     pythoncom.CoInitialize()
-    hide_console_window()
+    suppress_background_windows()
     try:
         hwp = _create_hwp()
         try:
             hwp.Quit()
         except Exception:
             pass
+        _hwp_installed_cache = True
         return True
     except Exception:
+        _hwp_installed_cache = False
         return False
     finally:
         pythoncom.CoUninitialize()

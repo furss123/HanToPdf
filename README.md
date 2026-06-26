@@ -31,29 +31,6 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 
 바탕화면에 `HanToPdf.exe`와 바로가기가 생성됩니다.
 
-## GitHub 연동 · 온라인 작업
-
-| 방법 | 용도 |
-|------|------|
-| [GitHub 저장소](https://github.com) | 코드 관리, 이슈, PR |
-| [GitHub Pages](docs/index.html) | 프로젝트 소개 페이지 (자동 배포) |
-| [GitHub Codespaces](https://github.com/codespaces) | 브라우저에서 코드 편집·개발 |
-
-### 저장소 최초 연동
-
-```powershell
-gh auth login
-gh repo create HanToPdf --public --source=. --remote=origin --push
-```
-
-GitHub Pages 설정: **Settings → Pages → Build and deployment → GitHub Actions**
-
-### 온라인에서 가능한 것 / 불가능한 것
-
-- ✅ 코드 수정, PR, Issues, 프로젝트 페이지
-- ✅ Codespaces에서 Python 개발 환경 사용
-- ❌ 브라우저에서 HWP→PDF 변환 (한글 COM은 Windows 로컬 전용)
-
 ## 프로젝트 구조
 
 ```
@@ -62,10 +39,9 @@ HanToPdf/
 ├── converter.py     # HWP→PDF 변환 (COM)
 ├── settings.py      # 설정 저장
 ├── ui_theme.py      # 글래스모피즘 테마
-├── build.ps1        # exe 빌드 스크립트
-└── docs/            # GitHub Pages
+└── build.ps1        # exe 빌드 스크립트
 ```
 
-## 라이선스
+## 저작권
 
-MIT (필요 시 추가)
+© HyoT. All rights reserved.

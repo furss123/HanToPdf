@@ -2,46 +2,46 @@
 $ErrorActionPreference = "Stop"
 $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Desktop = [Environment]::GetFolderPath("Desktop")
-$DistExe = Join-Path $Desktop "HanToPdf.exe"
+$DistDir = Join-Path $Desktop "HanToPdf"
+$DistExe = Join-Path $DistDir "HanToPdf.exe"
 
 Set-Location $ProjectDir
 
 Write-Host "의존성 설치 중..."
 pip install -r requirements.txt -q
 
-$RuntimeHook = Join-Path $ProjectDir "rthook_hide_console.py"
+$AssetsDir = Join-Path $ProjectDir "assets"
+$PatchScript = Join-Path $ProjectDir "scripts\patch_gui_subsystem.py"
+$IconIco = Join-Path $AssetsDir "icon.ico"
 
 Write-Host "exe 빌드 중..."
 pyinstaller `
-    --onefile `
-    --windowed `
-    --name HanToPdf `
+    HanToPdf.spec `
     --distpath $Desktop `
     --workpath (Join-Path $ProjectDir "build") `
-    --specpath $ProjectDir `
-    --runtime-hook $RuntimeHook `
     --clean `
-    --noconfirm `
-    --collect-all tkinterdnd2 `
-    --exclude-module numpy `
-    --exclude-module pandas `
-    --exclude-module PIL `
-    --exclude-module scipy `
-    --exclude-module IPython `
-    --exclude-module pytest `
-    main.py
+    --noconfirm
 
 if (Test-Path $DistExe) {
+    python $PatchScript $DistExe
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "exe GUI 서브시스템 패치 실패." -ForegroundColor Red
+        exit 1
+    }
     $size = [math]::Round((Get-Item $DistExe).Length / 1MB, 1)
     Write-Host ""
     Write-Host "완료! $DistExe ($size MB)" -ForegroundColor Green
+    Write-Host "실행 폴더: $DistDir" -ForegroundColor Green
 
     $ShortcutPath = Join-Path $Desktop "HanToPdf.lnk"
     $WshShell = New-Object -ComObject WScript.Shell
     $Shortcut = $WshShell.CreateShortcut($ShortcutPath)
     $Shortcut.TargetPath = $DistExe
-    $Shortcut.WorkingDirectory = $Desktop
+    $Shortcut.WorkingDirectory = $DistDir
     $Shortcut.Description = "HanToPdf - 한글 파일 PDF 변환기"
+    if (Test-Path $IconIco) {
+        $Shortcut.IconLocation = "$IconIco,0"
+    }
     $Shortcut.Save()
     Write-Host "바로가기 생성: $ShortcutPath" -ForegroundColor Green
 } else {

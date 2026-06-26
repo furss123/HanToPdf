@@ -1,0 +1,73 @@
+# HanToPdf 릴리스 패키지 생성 (GitHub 자동 업데이트용)
+# 사용: powershell -ExecutionPolicy Bypass -File scripts\package_release.ps1 -Version 1.0.1
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$Version,
+    [string]$GitHubRepo = "furss123/HanToPdf",
+    [string]$GitHubBranch = "main",
+    [string]$SourceDir = "",
+    [string]$OutputDir = "",
+    [string]$ReleaseNotes = ""
+)
+$ErrorActionPreference = "Stop"
+$ProjectDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+if (-not $SourceDir) {
+    $Desktop = [Environment]::GetFolderPath("Desktop")
+    $SourceDir = Join-Path $Desktop "HanToPdf"
+}
+if (-not $OutputDir) {
+    $OutputDir = Join-Path $ProjectDir "releases"
+}
+$ZipName = "HanToPdf-$Version.zip"
+$ZipPath = Join-Path $OutputDir $ZipName
+$ManifestPath = Join-Path $OutputDir "version.json"
+$VersionPy = Join-Path $ProjectDir "version.py"
+
+if (-not (Test-Path (Join-Path $SourceDir "HanToPdf.exe"))) {
+    Write-Error "빌드 폴더를 찾을 수 없습니다: $SourceDir"
+}
+New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
+if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
+
+$staging = Join-Path $env:TEMP ("HanToPdf_pkg_" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $staging -Force | Out-Null
+try {
+    & robocopy $SourceDir $staging /E /COPY:DAT /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -ge 8) { throw "robocopy failed: $LASTEXITCODE" }
+    Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $ZipPath -Force
+} finally {
+    Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$hash = (Get-FileHash -Algorithm SHA256 -Path $ZipPath).Hash.ToLower()
+if (-not $ReleaseNotes) {
+    $ReleaseNotes = "HanToPdf $Version"
+}
+$manifest = @{
+    version       = $Version
+    download_url  = $ZipName
+    sha256        = $hash
+    release_notes = $ReleaseNotes
+} | ConvertTo-Json -Depth 3
+Set-Content -Path $ManifestPath -Value $manifest -Encoding UTF8
+
+if (Test-Path $VersionPy) {
+    $content = Get-Content $VersionPy -Raw -Encoding UTF8
+    $content = [regex]::Replace($content, '__version__\s*=\s*"[^"]*"', "__version__ = `"$Version`"")
+    Set-Content -Path $VersionPy -Value $content -Encoding UTF8 -NoNewline
+}
+
+$rawBase = "https://raw.githubusercontent.com/$GitHubRepo/$GitHubBranch/releases"
+Write-Host ""
+Write-Host "ZIP: $ZipPath"
+Write-Host "Manifest: $ManifestPath"
+Write-Host "SHA256: $hash"
+Write-Host ""
+Write-Host "GitHub 업로드 (releases 폴더):" -ForegroundColor Cyan
+Write-Host "  releases/version.json"
+Write-Host "  releases/$ZipName"
+Write-Host ""
+Write-Host "download_url 은 앱에서 자동으로 다음 주소로 해석됩니다:" -ForegroundColor Cyan
+Write-Host "  $rawBase/$ZipName"
+Write-Host ""
+Write-Host "update_config.py 의 GITHUB_REPO 가 `"$GitHubRepo`" 인지 확인하세요."
