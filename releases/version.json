@@ -1,6 +1,6 @@
 {
-    "download_url":  "HanToPdf-1.0.2.zip",
-    "sha256":  "58c04c3df0d7700f2a5fcac179edecc32dc487eb4951c2b04d001c8491d9e364",
-    "version":  "1.0.2",
-    "release_notes":  "UI 개선, 자동 업데이트, GitHub 연동, 설정 창 레이아웃 수정, version.json BOM 수정"
+    "download_url":  "HanToPdf-1.0.3.zip",
+    "sha256":  "5f75f1783dd0b55e8c02e52a563f77d4663e32d5c6aa9b69b3ee5171457342f5",
+    "version":  "1.0.3",
+    "release_notes":  "업데이트 시 백신 오탐 수정(PowerShell 제거), 레지스트리 직접 쓰기 제거, 업데이트 적용 안정화"
 }

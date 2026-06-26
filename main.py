@@ -943,6 +943,11 @@ class HanToPdfApp(TkinterDnD.Tk):
 
 
 def main():
+    if len(sys.argv) >= 6 and sys.argv[1] == "--hantopdf-apply-update":
+        from update_apply import run_apply_update_cli
+
+        raise SystemExit(run_apply_update_cli(sys.argv[2:6]))
+
     hide_console_window()
     if getattr(sys, "frozen", False):
         from winutil import silence_stdio

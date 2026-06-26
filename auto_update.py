@@ -561,22 +561,19 @@ def _run_update_flow(
             root.after(0, lambda: overlay.set_progress(_PCT_VERIFY_END))
 
             root.after(0, lambda: overlay.set_detail("업데이트 적용 중…"))
-            script_path = _write_apply_script(zip_path)
             pid = os.getpid()
             install = _install_dir()
             exe_path = install / "HanToPdf.exe"
             subprocess.Popen(
                 [
-                    "powershell.exe",
-                    "-NoProfile",
-                    "-ExecutionPolicy", "Bypass",
-                    "-WindowStyle", "Hidden",
-                    "-File", str(script_path),
-                    "-ProcessId", str(pid),
-                    "-InstallDir", str(install),
-                    "-ZipPath", str(zip_path),
-                    "-ExePath", str(exe_path),
+                    sys.executable,
+                    "--hantopdf-apply-update",
+                    str(pid),
+                    str(install),
+                    str(zip_path),
+                    str(exe_path),
                 ],
+                cwd=str(install),
                 close_fds=True,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
@@ -617,42 +614,18 @@ def _show_update_error(
     if root.winfo_exists():
         messagebox.showerror(
             "업데이트 실패",
-            f"자동 업데이트를 완료하지 못했습니다.\n앱은 계속 사용할 수 있습니다.\n\n{message}",
+            "자동 업데이트를 완료하지 못했습니다.\n"
+            "앱은 계속 사용할 수 있습니다.\n\n"
+            f"{message}\n\n"
+            f"자세한 내용: {_update_log_hint()}",
             parent=root,
         )
 
 
-def _write_apply_script(zip_path: Path) -> Path:
-    script = r'''param(
-    [Parameter(Mandatory=$true)][int]$ProcessId,
-    [Parameter(Mandatory=$true)][string]$InstallDir,
-    [Parameter(Mandatory=$true)][string]$ZipPath,
-    [Parameter(Mandatory=$true)][string]$ExePath
-)
-$ErrorActionPreference = "Stop"
-try {
-    Wait-Process -Id $ProcessId -ErrorAction SilentlyContinue
-} catch {}
-Start-Sleep -Seconds 2
-$staging = Join-Path $env:TEMP ("HanToPdf_update_" + [guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Path $staging -Force | Out-Null
-try {
-    Expand-Archive -LiteralPath $ZipPath -DestinationPath $staging -Force
-    $src = $staging
-    $nested = Join-Path $staging "HanToPdf"
-    if (Test-Path $nested) { $src = $nested }
-    & robocopy $src $InstallDir /E /COPY:DAT /R:2 /W:2 /NFL /NDL /NJH /NJS /NP | Out-Null
-    if ($LASTEXITCODE -ge 8) { throw "robocopy failed: $LASTEXITCODE" }
-    Start-Process -FilePath $ExePath -WorkingDirectory $InstallDir
-} finally {
-    Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item $ZipPath -Force -ErrorAction SilentlyContinue
-    Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue
-}
-'''
-    path = Path(tempfile.gettempdir()) / f"hantopdf_apply_{os.getpid()}.ps1"
-    path.write_text(script, encoding="utf-8")
-    return path
+def _update_log_hint() -> str:
+    from update_apply import _LOG_PATH
+
+    return str(_LOG_PATH)
 
 
 class _UpdateOverlay:

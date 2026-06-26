@@ -200,20 +200,13 @@ def _write_registry_module(name: str, dll_path: Path) -> None:
 
 
 def ensure_hwp_security_module_registered() -> bool:
-    """PC에 보안 DLL이 있으면 레지스트리에 자동 등록."""
+    """이미 등록된 한글 보안 모듈이 있는지 확인만 함 (레지스트리 직접 쓰기 없음)."""
     global _security_registry_ensured
     if _security_registry_ensured:
         return True
-    if _discover_registry_module_names():
-        _security_registry_ensured = True
-        return True
-    dll = _search_security_dll()
-    if dll is None:
-        return False
-    _write_registry_module(_AUTO_MODULE_NAME, dll)
-    _discover_registry_module_names(refresh=True)
+    names = _discover_registry_module_names()
     _security_registry_ensured = True
-    return True
+    return bool(names)
 
 
 def register_hwp_security_modules(hwp) -> None:
