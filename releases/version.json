@@ -1,6 +1,6 @@
 {
-    "download_url":  "HanToPdf-1.0.7.zip",
-    "sha256":  "1f7ea046d1f484cfadc802c24174ac5c3ee8644c02cd53983606871de4e84742",
-    "version":  "1.0.7",
-    "release_notes":  "바로가기 아이콘 갱신 수정, PowerShell 업데이트로 안랩 오탐 완화, Defender 예외 자동 등록"
+    "download_url":  "HanToPdf-1.0.8.zip",
+    "sha256":  "c54b360bf7d997b6f5a7d910d29bfb2c8a2bb9bd63d90dee02bd9a15c79e7c99",
+    "version":  "1.0.8",
+    "release_notes":  "안랩 V3 검사 예외 자동 등록, Defender 프로세스 예외, 고해상도 아이콘"
 }

@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-_DEFAULT = "1.0.7"
+_DEFAULT = "1.0.8"
 
 
 def _read_installed_version() -> str:

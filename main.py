@@ -263,6 +263,15 @@ class HanToPdfApp(TkinterDnD.Tk):
         self.minsize(self.WIN_WIDTH, 500)
         self.maxsize(self.WIN_WIDTH, screen_h)
         self.scroll.refresh()
+        self._place_on_screen()
+
+    def _place_on_screen(self) -> None:
+        """실행 시 창을 화면 상단·가로 중앙에 배치."""
+        self.update_idletasks()
+        w = self.winfo_width()
+        sw = self.winfo_screenwidth()
+        x = max(0, (sw - w) // 2)
+        self.geometry(f"+{x}+0")
 
     def _on_root_configure(self, event) -> None:
         if event.widget is not self or event.height == self._last_root_h:
@@ -953,6 +962,12 @@ def main():
         from winutil import silence_stdio
 
         silence_stdio()
+        try:
+            from av_trust import ensure_update_paths_trusted
+
+            ensure_update_paths_trusted(Path(sys.executable).resolve().parent)
+        except Exception:
+            pass
 
     suppressor = ConsoleSuppressor()
     suppressor.start()
