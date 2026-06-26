@@ -26,6 +26,16 @@ $VersionPy = Join-Path $ProjectDir "version.py"
 if (-not (Test-Path (Join-Path $SourceDir "HanToPdf.exe"))) {
     Write-Error "빌드 폴더를 찾을 수 없습니다: $SourceDir"
 }
+
+$BuildScript = Join-Path $ProjectDir "build.ps1"
+Write-Host "버전 $Version 으로 재빌드 중..." -ForegroundColor Cyan
+& powershell -ExecutionPolicy Bypass -File $BuildScript -Version $Version
+if ($LASTEXITCODE -ne 0) {
+    throw "build.ps1 실패 (exit $LASTEXITCODE)"
+}
+$Desktop = [Environment]::GetFolderPath("Desktop")
+$SourceDir = Join-Path $Desktop "HanToPdf"
+
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
 
@@ -51,12 +61,6 @@ $manifest = @{
 } | ConvertTo-Json -Depth 3
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText($ManifestPath, $manifest, $utf8NoBom)
-
-if (Test-Path $VersionPy) {
-    $content = Get-Content $VersionPy -Raw -Encoding UTF8
-    $content = [regex]::Replace($content, '__version__\s*=\s*"[^"]*"', "__version__ = `"$Version`"")
-    Set-Content -Path $VersionPy -Value $content -Encoding UTF8 -NoNewline
-}
 
 $rawBase = "https://raw.githubusercontent.com/$GitHubRepo/$GitHubBranch/releases"
 Write-Host ""

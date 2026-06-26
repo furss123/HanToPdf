@@ -121,6 +121,35 @@ def _wait_for_process(pid: int) -> None:
             _log(f"WaitForSingleObject 타임아웃(pid={pid}, code={result})")
     finally:
         kernel32.CloseHandle(handle)
+
+
+def _count_processes(image_name: str) -> int:
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"IMAGENAME eq {image_name}", "/NH"],
+            capture_output=True,
+            text=True,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+    except OSError:
+        return 0
+    return sum(1 for line in result.stdout.splitlines() if image_name.lower() in line.lower())
+
+
+def _wait_for_install_idle(parent_pid: int) -> None:
+    """설치 폴더 exe가 모두 종료될 때까지 대기 (업데이터 프로세스만 남을 때까지)."""
+    _wait_for_process(parent_pid)
+    for attempt in range(120):
+        count = _count_processes("HanToPdf.exe")
+        if count <= 1:
+            break
+        if attempt % 10 == 0:
+            _log(f"HanToPdf.exe 프로세스 대기 중... (count={count})")
+        time.sleep(0.5)
+    else:
+        _log("HanToPdf.exe 프로세스 대기 타임아웃")
     time.sleep(2)
 
 
@@ -207,7 +236,7 @@ def apply_update(
     _log(f"업데이트 시작 pid={parent_pid} install={install_dir} zip={zip_path}")
 
     cleanup_legacy_update_artifacts()
-    _wait_for_process(parent_pid)
+    _wait_for_install_idle(parent_pid)
 
     if not zip_path.is_file():
         raise FileNotFoundError(f"ZIP 없음: {zip_path}")
@@ -222,6 +251,12 @@ def apply_update(
 
         count = _copy_tree(src, install_dir)
         _log(f"파일 복사 완료: {count}개 -> {install_dir}")
+
+        version_file = install_dir / "VERSION.txt"
+        if version_file.is_file():
+            _log(f"설치 버전: {version_file.read_text(encoding='utf-8-sig').strip()}")
+        else:
+            _log("VERSION.txt 없음 — 구버전 패키지일 수 있음")
 
         if not exe_path.is_file():
             raise FileNotFoundError(f"업데이트 후 exe 없음: {exe_path}")

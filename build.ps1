@@ -1,12 +1,31 @@
 # HanToPdf 빌드 스크립트 - 바탕화면에 exe 생성
+param(
+    [string]$Version = ""
+)
 $ErrorActionPreference = "Stop"
 $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Desktop = [Environment]::GetFolderPath("Desktop")
 $DistDir = Join-Path $Desktop "HanToPdf"
 $DistExe = Join-Path $DistDir "HanToPdf.exe"
+$VersionPy = Join-Path $ProjectDir "version.py"
 
 Set-Location $ProjectDir
 
+if ($Version) {
+    Write-Host "version.py -> $Version"
+    $content = Get-Content $VersionPy -Raw -Encoding UTF8
+    $content = [regex]::Replace($content, '_DEFAULT = "[^"]*"', "_DEFAULT = `"$Version`"")
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($VersionPy, $content, $utf8NoBom)
+    $BuildVersion = $Version
+} else {
+    $content = Get-Content $VersionPy -Raw -Encoding UTF8
+    if ($content -match '_DEFAULT = "([^"]*)"') {
+        $BuildVersion = $Matches[1]
+    } else {
+        $BuildVersion = "1.0.0"
+    }
+}
 Write-Host "의존성 설치 중..."
 pip install -r requirements.txt -q
 
@@ -44,6 +63,10 @@ if (Test-Path $DistExe) {
     }
     $Shortcut.Save()
     Write-Host "바로가기 생성: $ShortcutPath" -ForegroundColor Green
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText((Join-Path $DistDir "VERSION.txt"), $BuildVersion, $utf8NoBom)
+    Write-Host "VERSION.txt -> $BuildVersion" -ForegroundColor Green
 } else {
     Write-Host "빌드 실패" -ForegroundColor Red
     exit 1
