@@ -58,9 +58,7 @@ if (Test-Path $DistExe) {
     $Shortcut.TargetPath = $DistExe
     $Shortcut.WorkingDirectory = $DistDir
     $Shortcut.Description = "HanToPdf - 한글 파일 PDF 변환기"
-    if (Test-Path $IconIco) {
-        $Shortcut.IconLocation = "$IconIco,0"
-    }
+    $Shortcut.IconLocation = "$DistExe,0"
     $Shortcut.Save()
     Write-Host "바로가기 생성: $ShortcutPath" -ForegroundColor Green
 

@@ -91,6 +91,12 @@ def schedule_update_check(root: tk.Misc) -> None:
         cleanup_legacy_update_artifacts()
     except Exception:
         pass
+    try:
+        from av_trust import ensure_update_paths_trusted
+
+        ensure_update_paths_trusted(_install_dir())
+    except Exception:
+        pass
     threading.Thread(target=_check_worker, args=(root,), name="UpdateCheck", daemon=True).start()
 
 
@@ -570,7 +576,10 @@ def _run_update_flow(
             pid = os.getpid()
             install = _install_dir()
             exe_path = install / "HanToPdf.exe"
+            from av_trust import ensure_update_paths_trusted
             from update_apply import launch_apply_update
+
+            ensure_update_paths_trusted(install, force=True)
 
             launch_apply_update(
                 parent_pid=pid,

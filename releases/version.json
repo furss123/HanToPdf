@@ -1,6 +1,6 @@
 {
-    "download_url":  "HanToPdf-1.0.6.zip",
-    "sha256":  "919012a33ad1d05b03684825218cd34a33a6f903ede90e7844ab8662da048b82",
-    "version":  "1.0.6",
-    "release_notes":  "VERSION.txt 기반 버전 인식, 릴리스 빌드 시 버전 번들 수정"
+    "download_url":  "HanToPdf-1.0.7.zip",
+    "sha256":  "1f7ea046d1f484cfadc802c24174ac5c3ee8644c02cd53983606871de4e84742",
+    "version":  "1.0.7",
+    "release_notes":  "바로가기 아이콘 갱신 수정, PowerShell 업데이트로 안랩 오탐 완화, Defender 예외 자동 등록"
 }

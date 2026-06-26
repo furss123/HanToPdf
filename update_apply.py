@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -14,6 +15,7 @@ from pathlib import Path
 
 _LOG_PATH = Path(os.environ.get("APPDATA", str(Path.home()))) / "HanToPdf" / "update.log"
 _LOCAL_BASE = Path(os.environ.get("LOCALAPPDATA", tempfile.gettempdir())) / "HanToPdf"
+_APPLY_PS1 = _LOCAL_BASE / "apply_update.ps1"
 
 _SYNCHRONIZE = 0x00100000
 _WAIT_TIMEOUT_MS = 120_000
@@ -62,50 +64,15 @@ def cleanup_legacy_update_artifacts() -> None:
         for item in staging_root.glob("extract_*"):
             shutil.rmtree(item, ignore_errors=True)
 
+    runtime_root = _LOCAL_BASE / "updater-runtime"
+    if runtime_root.is_dir():
+        shutil.rmtree(runtime_root, ignore_errors=True)
+
 
 def _make_extract_dir() -> Path:
     root = _LOCAL_BASE / "staging"
     root.mkdir(parents=True, exist_ok=True)
     return Path(tempfile.mkdtemp(prefix="extract_", dir=root))
-
-
-def _prepare_detached_updater(install_dir: Path) -> Path:
-    """설치 폴더 DLL 잠금을 피하려고 LOCALAPPDATA에 실행 복사본 생성."""
-    install_dir = install_dir.resolve()
-    runtime_root = _LOCAL_BASE / "updater-runtime"
-    runtime_root.mkdir(parents=True, exist_ok=True)
-    runtime = Path(tempfile.mkdtemp(prefix="run_", dir=runtime_root))
-
-    src_exe = install_dir / "HanToPdf.exe"
-    src_internal = install_dir / "_internal"
-    if not src_exe.is_file():
-        raise FileNotFoundError(f"실행 파일 없음: {src_exe}")
-    if not src_internal.is_dir():
-        raise FileNotFoundError(f"_internal 폴더 없음: {src_internal}")
-
-    shutil.copy2(src_exe, runtime / "HanToPdf.exe")
-    shutil.copytree(src_internal, runtime / "_internal")
-    _log(f"분리 업데이터 준비: {runtime}")
-    return runtime / "HanToPdf.exe"
-
-
-def _schedule_dir_cleanup(path: Path) -> None:
-    import subprocess
-
-    if not path.exists():
-        return
-    cmd = f'ping 127.0.0.1 -n 3 >nul & rmdir /s /q "{path}"'
-    subprocess.Popen(
-        ["cmd.exe", "/c", cmd],
-        close_fds=True,
-        creationflags=_CREATE_NO_WINDOW,
-    )
-
-
-def _is_detached_runtime() -> bool:
-    if not getattr(sys, "frozen", False):
-        return False
-    return "updater-runtime" in Path(sys.executable).resolve().as_posix()
 
 
 def _wait_for_process(pid: int) -> None:
@@ -124,8 +91,6 @@ def _wait_for_process(pid: int) -> None:
 
 
 def _count_processes(image_name: str) -> int:
-    import subprocess
-
     try:
         result = subprocess.run(
             ["tasklist", "/FI", f"IMAGENAME eq {image_name}", "/NH"],
@@ -139,11 +104,11 @@ def _count_processes(image_name: str) -> int:
 
 
 def _wait_for_install_idle(parent_pid: int) -> None:
-    """설치 폴더 exe가 모두 종료될 때까지 대기 (업데이터 프로세스만 남을 때까지)."""
+    """설치 폴더 exe가 모두 종료될 때까지 대기."""
     _wait_for_process(parent_pid)
     for attempt in range(120):
         count = _count_processes("HanToPdf.exe")
-        if count <= 1:
+        if count == 0:
             break
         if attempt % 10 == 0:
             _log(f"HanToPdf.exe 프로세스 대기 중... (count={count})")
@@ -195,6 +160,146 @@ def _copy_tree(src: Path, dst: Path) -> int:
     return copied
 
 
+def _write_apply_ps1() -> Path:
+    """exe 자기복사 없이 PowerShell로 적용 — 안랩 DefenseEvasion 오탐 완화."""
+    _LOCAL_BASE.mkdir(parents=True, exist_ok=True)
+    script = r'''param(
+    [int]$ParentPid,
+    [string]$InstallDir,
+    [string]$ZipPath,
+    [string]$ExePath,
+    [string]$LogPath
+)
+
+$ErrorActionPreference = 'Stop'
+
+function Write-UpdateLog {
+    param([string]$Message)
+    $line = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message
+    try {
+        $dir = Split-Path -Parent $LogPath
+        if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        Add-Content -Path $LogPath -Value $line -Encoding UTF8
+    } catch {}
+}
+
+function Wait-InstallIdle {
+    if ($ParentPid -gt 0) {
+        try {
+            Wait-Process -Id $ParentPid -Timeout 120 -ErrorAction SilentlyContinue
+        } catch {}
+    }
+    for ($i = 0; $i -lt 120; $i++) {
+        $procs = @(Get-Process -Name 'HanToPdf' -ErrorAction SilentlyContinue)
+        if ($procs.Count -eq 0) { break }
+        if (($i % 10) -eq 0) {
+            Write-UpdateLog "HanToPdf.exe 프로세스 대기 중... (count=$($procs.Count))"
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    Start-Sleep -Seconds 2
+}
+
+function Resolve-ZipRoot {
+    param([string]$Staging)
+    $nested = Join-Path $Staging 'HanToPdf'
+    if ((Test-Path (Join-Path $nested 'HanToPdf.exe'))) { return $nested }
+    if (Test-Path (Join-Path $Staging 'HanToPdf.exe')) { return $Staging }
+    $dirs = @(Get-ChildItem -Path $Staging -Directory -ErrorAction SilentlyContinue)
+    if ($dirs.Count -eq 1 -and (Test-Path (Join-Path $dirs[0].FullName 'HanToPdf.exe'))) {
+        return $dirs[0].FullName
+    }
+    return $Staging
+}
+
+function Update-DesktopShortcut {
+    param([string]$Install, [string]$Exe)
+    $desktop = [Environment]::GetFolderPath('Desktop')
+    $lnk = Join-Path $desktop 'HanToPdf.lnk'
+    if (Test-Path $lnk) { Remove-Item -LiteralPath $lnk -Force }
+    $shell = New-Object -ComObject WScript.Shell
+    $sc = $shell.CreateShortcut($lnk)
+    $sc.TargetPath = $Exe
+    $sc.WorkingDirectory = $Install
+    $sc.Description = 'HanToPdf - 한글 파일 PDF 변환기'
+    $sc.IconLocation = "$Exe,0"
+    $sc.Save()
+    try {
+        Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class HanToPdfShellNotify {
+    [DllImport("shell32.dll")]
+    public static extern void SHChangeNotify(int eventId, uint flags, IntPtr item1, IntPtr item2);
+}
+"@ -ErrorAction SilentlyContinue | Out-Null
+        [HanToPdfShellNotify]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
+    } catch {}
+    $ie4uinit = Join-Path $env:SystemRoot 'System32\ie4uinit.exe'
+    if (Test-Path $ie4uinit) {
+        Start-Process -FilePath $ie4uinit -ArgumentList '-show' -WindowStyle Hidden -ErrorAction SilentlyContinue
+    }
+    Write-UpdateLog "바탕화면 바로가기 갱신: $lnk"
+}
+
+try {
+    Write-UpdateLog "PowerShell 업데이트 시작 pid=$ParentPid install=$InstallDir zip=$ZipPath"
+    Wait-InstallIdle
+
+    if (-not (Test-Path -LiteralPath $ZipPath)) {
+        throw "ZIP 없음: $ZipPath"
+    }
+
+    $stagingRoot = Join-Path $env:LOCALAPPDATA 'HanToPdf\staging'
+    if (-not (Test-Path $stagingRoot)) { New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null }
+    $staging = Join-Path $stagingRoot ("extract_" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Path $staging -Force | Out-Null
+
+    try {
+        Expand-Archive -LiteralPath $ZipPath -DestinationPath $staging -Force
+        $src = Resolve-ZipRoot -Staging $staging
+        if (-not (Test-Path (Join-Path $src 'HanToPdf.exe'))) {
+            throw "ZIP 안에 HanToPdf.exe 없음: $src"
+        }
+
+        $robocopyArgs = @(
+            $src, $InstallDir,
+            '/E', '/IS', '/IT', '/R:3', '/W:1',
+            '/NFL', '/NDL', '/NJH', '/NJS', '/nc', '/ns', '/np'
+        )
+        & robocopy.exe @robocopyArgs | Out-Null
+        $rc = $LASTEXITCODE
+        if ($rc -ge 8) {
+            throw "robocopy 실패 (exit=$rc)"
+        }
+        Write-UpdateLog "파일 복사 완료 (robocopy exit=$rc) -> $InstallDir"
+
+        $versionFile = Join-Path $InstallDir 'VERSION.txt'
+        if (Test-Path $versionFile) {
+            $ver = (Get-Content -LiteralPath $versionFile -Raw -Encoding UTF8).Trim()
+            Write-UpdateLog "설치 버전: $ver"
+        }
+
+        if (-not (Test-Path -LiteralPath $ExePath)) {
+            throw "업데이트 후 exe 없음: $ExePath"
+        }
+
+        Update-DesktopShortcut -Install $InstallDir -Exe $ExePath
+        Start-Process -FilePath $ExePath -WorkingDirectory $InstallDir
+        Write-UpdateLog "재시작: $ExePath"
+    } finally {
+        if (Test-Path $staging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $ZipPath) { Remove-Item -LiteralPath $ZipPath -Force -ErrorAction SilentlyContinue }
+    }
+} catch {
+    Write-UpdateLog ("업데이트 실패: " + $_.Exception.Message)
+    exit 1
+}
+'''
+    _APPLY_PS1.write_text(script, encoding="utf-8-sig")
+    return _APPLY_PS1
+
+
 def launch_apply_update(
     *,
     parent_pid: int,
@@ -202,25 +307,38 @@ def launch_apply_update(
     zip_path: Path,
     exe_path: Path,
 ) -> None:
-    """설치 폴더와 분리된 exe 복사본으로 업데이트 적용 프로세스 시작."""
-    import subprocess
+    """PowerShell로 업데이트 적용 (HanToPdf exe 자기복사 없음)."""
+    from av_trust import ensure_update_paths_trusted
 
     cleanup_legacy_update_artifacts()
-    updater_exe = _prepare_detached_updater(install_dir)
+    ensure_update_paths_trusted(install_dir, force=True)
+
+    ps1 = _write_apply_ps1()
     subprocess.Popen(
         [
-            str(updater_exe),
-            "--hantopdf-apply-update",
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-File",
+            str(ps1),
+            "-ParentPid",
             str(parent_pid),
-            str(install_dir),
-            str(zip_path),
-            str(exe_path),
+            "-InstallDir",
+            str(install_dir.resolve()),
+            "-ZipPath",
+            str(zip_path.resolve()),
+            "-ExePath",
+            str(exe_path.resolve()),
+            "-LogPath",
+            str(_LOG_PATH),
         ],
-        cwd=str(updater_exe.parent),
         close_fds=True,
         creationflags=_DETACHED_PROCESS | _CREATE_NO_WINDOW,
     )
-    _log(f"업데이트 프로세스 시작: {updater_exe}")
+    _log(f"PowerShell 업데이트 프로세스 시작: {ps1}")
 
 
 def apply_update(
@@ -230,6 +348,7 @@ def apply_update(
     zip_path: Path,
     exe_path: Path,
 ) -> None:
+    """Python 직접 적용 (개발·폴백용)."""
     install_dir = install_dir.resolve()
     zip_path = zip_path.resolve()
     exe_path = exe_path.resolve()
@@ -275,17 +394,12 @@ def apply_update(
     except Exception:
         _log_exception("바로가기 갱신 실패(계속 재시작)")
 
-    import subprocess
-
     subprocess.Popen(
         [str(exe_path)],
         cwd=str(install_dir),
         close_fds=True,
     )
     _log(f"재시작: {exe_path}")
-
-    if _is_detached_runtime():
-        _schedule_dir_cleanup(Path(sys.executable).resolve().parent)
 
 
 def run_apply_update_cli(argv: list[str] | None = None) -> int:
